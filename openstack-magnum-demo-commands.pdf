@@ -1,0 +1,76 @@
+### Create SSH key
+test -f ~/.ssh/id_rsa.pub || ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa
+nova keypair-add --pub-key ~/.ssh/id_rsa.pub testkey
+
+### Create BAY-MODEL
+magnum baymodel-create --name k8sbaymodel \
+                       --image-id fedora-21-atomic-5 \
+                       --keypair-id testkey \
+                       --external-network-id public \
+                       --dns-nameserver 8.8.8.8 \
+                       --flavor-id m1.small \
+                       --docker-volume-size 5 \
+                       --network-driver flannel \
+                       --tls-disabled \
+                       --coe kubernetes
+
+### Create BAY (30sec)
+magnum bay-create --name k8sbay --baymodel k8sbaymodel --node-count 1
+
+### Poll for creation (progress can be seen in Horizon Orchestration
+magnum bay-list
+
+### Scaling, increase BAY node count
+magnum bay-update k8sbay replace node_count=2
+
+### Copy redis images to minions
+scp kubredis.tar minion@
+
+### Load docker images from file
+ssh minion@
+sudo docker load < kubredis.tar
+
+### Deploy Redis application (this will pull redis images from web, so it will take a while !)
+cd kubernetes/examples/redis
+magnum pod-create --manifest ./redis-master.yaml --bay k8sbay
+
+## Create kubernetes service for sentinel
+magnum coe-service-create --manifest ./redis-sentinel-service.yaml --bay k8sbay
+
+### Replication controllers
+magnum rc-create --manifest ./redis-controller.yaml --bay k8sbay
+magnum rc-create --manifest ./redis-sentinel-controller.yaml --bay k8sbay
+
+### Show status
+magnum rc-list k8sbay
+sudo docker ps # on minions, show redis master and it's replica slave
+
+### Connect to redis slave to show Sentinel variables
+sudo docker exec -i -t $REDIS_ID /bin/bash
+
+### Show that REDIS works
+#### Minion 1
+sudo docker exec -i -t $REDIS_ID redis-cli
+get replication:test
+
+#### Minion 2
+sudo docker exec -i -t $REDIS_ID redis-cli
+set replication:test true # and callget on minion1
+
+### Scale pod (via kubernetes)
+kubectl scale --replicas=2 replicationcontrollers redis-sentinel
+kubectl scale --replicas=2 replicationcontrollers redis
+
+
+* Deploy docker app (kubernettes)
+    - Show define docker app in kubernttes
+    - Show load balancing capabilities
+    - Show scale out capabilities
+    
+    
+Notes:
+- Seems like docker images are not replicated accross bay nodes
+
+
+    
+    
